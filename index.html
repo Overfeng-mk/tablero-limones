@@ -2,177 +2,667 @@
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tablero en la nube · Clasificadora de limones</title>
-<!-- Se abre con doble clic desde cualquier PC con internet (o se publica en GitHub Pages).
-     Se conecta solo al broker público de HiveMQ por WebSocket seguro (wss, puerto 8884). -->
+<!-- Misma página que la de la ESP32 (ESP32_planta/pagina.h, versión del 25/11/2026), pero por internet.
+     Se abre desde https://overfeng-mk.github.io/tablero-limones/ o con doble clic en cualquier equipo con internet.
+     Se conecta solo al broker público de HiveMQ por WebSocket seguro (wss, puerto 8884).
+     Datos que usa (MQTT_BASE de secretos.h):
+       .../completo  el mismo JSON que /estado de la página local (ESP32 desde el 26/11/2026)
+       .../estado    JSON resumido (firmware anterior: el tablero muestra lo que puede con él)
+       .../ultima    JPEG de la última foto que vio la red
+       .../clasificacion, .../alarma, .../conexion, .../ack
+     Los mandos viajan como "PIN|accion:valor" al tema .../cmd. -->
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
 :root{--bg:#101418;--panel:#182028;--line:#2a3542;--ink:#e8edf2;--mute:#93a1b0;--accent:#f08a24;--ok:#3cc47c;--warn:#f2c94c;--bad:#ff5d5d;--blue:#5aa9ff}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:14px 14px 40px}
-.wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:14px max(14px,env(safe-area-inset-left)) 40px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 header{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:10px}
-h1{margin:0;font-size:22px} h1 span{color:var(--accent)}
+h1{margin:0;font-size:22px;letter-spacing:.01em}
+h1 span{color:var(--accent)}
 .pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);font-size:13px;color:var(--mute)}
-.pill i{width:9px;height:9px;border-radius:50%;background:var(--bad)} .pill.ok i{background:var(--ok)}
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))}
+.pill i{width:9px;height:9px;border-radius:50%;background:var(--bad)}
+.pill.ok i{background:var(--ok)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
-.card h2{margin:0 0 10px;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--mute);font-weight:600}
-.big{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
-.sub{color:var(--mute);font-size:13px;margin-top:4px}
-.s0{color:var(--mute)} .s1{color:var(--ok)} .s2{color:var(--warn)} .s3{color:var(--accent)} .s4{color:var(--bad)} .s5,.s6{color:var(--blue)}
-.cA{color:var(--ok)} .cB{color:var(--warn)}
+.card h2,.mh{margin:0 0 10px;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.mh{margin:14px 0 8px}
+.ley{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin:0 4px 0 10px}
+.estado{font-size:30px;font-weight:700;letter-spacing:.02em}
+.sub{color:var(--mute);font-size:13px;margin-top:4px;min-height:19px}
+.s0{color:var(--mute)} .s1{color:var(--ok)} .s2{color:var(--warn)} .s3{color:var(--accent)} .s4{color:var(--bad)} .s5{color:var(--blue)} .s6{color:var(--blue)}
+.nido{display:flex;align-items:center;gap:14px}
+.bola{width:58px;height:58px;border-radius:50%;border:3px dashed var(--line);flex:none;transition:background .15s}
+.bola.si{background:radial-gradient(circle at 35% 35%,#f4f59a,#c9d22a 60%,#7f9a1c);border:3px solid #d8e05a}
+.big{font-size:30px;font-weight:700}
 .btns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 button{font:600 14px system-ui,sans-serif;color:var(--ink);background:#22303d;border:1px solid var(--line);border-radius:8px;padding:11px 8px;cursor:pointer}
-button:hover{border-color:var(--blue)} button.go{background:#1f6b45;border-color:#2d8f5e} button.stop{background:#7a2323;border-color:#a33}
+button:hover{border-color:var(--blue)}
+button:active{transform:translateY(1px)}
+button.go{background:#1f6b45;border-color:#2d8f5e}
+button.stop{background:#7a2323;border-color:#a33}
 button:disabled{opacity:.45;cursor:not-allowed}
-input{font:15px system-ui,sans-serif;color:var(--ink);background:#0f151b;border:1px solid var(--line);border-radius:7px;padding:8px;width:100%}
-input[type=range]{padding:0;accent-color:var(--accent)}
-label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}
-.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end}
-.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;font-size:14px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;font-size:14px}
+.row b{white-space:nowrap}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.kpi{padding:11px 12px;box-shadow:1px 0 var(--line),0 1px var(--line)}
+.kpi .k{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
+.kpi .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
+.kpi .v small{font-size:13px;font-weight:500;color:var(--mute);margin-left:3px}
+canvas{width:100%;height:210px;display:block}
 table{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
 th{font-size:11.5px;color:var(--mute);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:12px;font-weight:600}
+.tag.ok{background:#173d29;color:var(--ok)} .tag.bad{background:#4a1b1b;color:var(--bad)}
+.diag{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:13.5px}
+.diag span:nth-child(odd){color:var(--mute)}
+.diag span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}
+label.f input{font:15px system-ui,sans-serif;color:var(--ink);background:#0f151b;border:1px solid var(--line);border-radius:7px;padding:8px;width:100%}
+.cfg{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end}
+.msg{font-size:13px;color:var(--mute);min-height:18px}
+.caja{display:flex;align-items:baseline;gap:12px}
+.caja .big{font-size:44px;line-height:1}
+.cA{color:var(--ok)} .cB{color:var(--warn)} .cN{color:var(--bad)}
+.dos{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.dos div{background:#0f151b;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.dos b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.dos span{font-size:12px;color:var(--mute)}
+.luces{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
+.luz{border:1px solid var(--line);border-radius:7px;padding:7px 4px;text-align:center;font-size:11.5px;color:var(--mute)}
+.luz.on{border-color:var(--accent);color:var(--ink);background:#33230f}
+.chk{display:flex;align-items:center;gap:9px;font-size:14px;margin-top:9px}
+.camg{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px;align-items:start}
+nav{display:flex;gap:6px;flex-wrap:wrap;position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0}
+nav a{color:var(--mute);text-decoration:none;font-size:13px;font-weight:600;border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+nav a:hover{color:var(--ink);border-color:var(--blue)}
+.sec{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:10px 0 -4px;scroll-margin-top:50px}
+.prueba{display:grid;grid-template-columns:1fr;gap:8px}
+.prueba button{text-align:left;padding:11px 12px}
+.prueba button small{display:block;font-weight:400;color:var(--mute);font-size:12.5px;margin-top:2px}
+.why{font-size:12.5px;color:var(--warn);min-height:17px}
+#diagS{height:250px}
 .tbl{overflow-x:auto}
-canvas{width:100%;height:170px;display:block}
-.msg{font-size:13px;color:var(--mute);min-height:18px;margin-top:8px}
+td.n{color:var(--mute)}
+.aviso{border:1px solid #6b5a1e;background:#2b2510;color:var(--warn);border-radius:10px;padding:10px 14px;font-size:13.5px}
+.pin{display:flex;gap:8px;align-items:end;margin-bottom:10px}
+.pin label{flex:1}
+.ack{font-size:13px;color:var(--mute);min-height:18px;margin-top:8px}
+summary{cursor:pointer}
 </style></head><body><div class="wrap">
+
 <header>
   <h1>Tablero en la nube · <span>clasificadora de limones</span></h1>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <span class="pill" id="pBroker"><i></i><b id="tBroker">Conectando a la nube…</b></span>
     <span class="pill" id="pPlanta"><i></i><b id="tPlanta">Planta sin datos</b></span>
+    <span class="pill" id="enlace"><i></i><b id="enlaceTxt">Sin datos del PIC</b></span>
+    <span class="pill" id="uptime">—</span>
   </div>
 </header>
+<nav><a href="#control">Control</a><a href="#pruebas">Pruebas</a><a href="#tiempos">Tiempos</a><a href="#senales">Señales</a><a href="#faja">Faja</a><a href="#camara">Cámara</a><a href="#diagnostico">Diagnóstico</a><a href="#registro">Registro</a><a href="#conexion">Conexión</a></nav>
+<div class="aviso" id="aviso" hidden>La ESP32 todavía manda solo el estado resumido: se ven el estado, los conteos, la velocidad y los mandos. Para ver todo lo demás (encoders, cámara, diagnóstico) graben en la ESP32 la versión de la rama <b>nube/tablero-completo</b>.</div>
 
-<section class="card">
-  <h2>Conexión con la nube (broker MQTT de HiveMQ)</h2>
-  <div class="form">
-    <label>Broker<input id="host" autocomplete="off"></label>
-    <label>Prefijo de temas<input id="base" autocomplete="off"></label>
-    <label>PIN de mando (solo para telecomandar)<input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="····"></label>
-    <button id="conectar" class="go">Reconectar</button>
-  </div>
-  <details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Usuario y clave (solo si usan un clúster privado de HiveMQ Cloud)</summary>
-    <div class="form" style="margin-top:8px">
-      <label>Usuario<input id="user" autocomplete="off"></label>
-      <label>Clave<input id="pass" type="password" autocomplete="off"></label>
+<h2 class="sec" id="control">Control</h2>
+<div class="grid">
+  <section class="card">
+    <h2>Estado de la faja</h2>
+    <div class="estado s0" id="estado">—</div>
+    <div class="sub" id="estadoSub"></div>
+    <div class="row"><span>PWM aplicado</span><b id="pwm">—</b></div>
+  </section>
+  <section class="card">
+    <h2>Estación de inspección</h2>
+    <div class="nido"><div class="bola" id="bola"></div>
+      <div><div class="big" id="naranja">—</div><div class="sub">limón en el nido (sensor IR)</div></div></div>
+    <div class="row"><span>Limones detectados</span><b id="nN">—</b></div>
+  </section>
+  <section class="card">
+    <h2>Mando</h2>
+    <div class="pin"><label class="f">PIN de mando<input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="····"></label></div>
+    <div class="btns">
+      <button class="go" data-a="marcha">Marcha</button>
+      <button class="stop" data-a="paro">Paro</button>
+      <button data-a="reanudar">Reanudar</button>
+      <button data-a="alarma">Borrar alarma</button>
     </div>
-  </details>
-  <div class="msg" id="msg">Se conecta solo al abrir la página. Ver los datos no necesita PIN; los botones de mando sí.</div>
+    <div class="btns" style="margin-top:8px"><button id="bHome">Brazo en HOME → llevar a ESPERA</button></div>
+    <div class="msg" id="homeWhy" style="margin-top:4px">Úsenlo al encender, con el brazo en HOME (estirado sobre el nido y la Z arriba) y la faja parada. El SCARA toma ese punto como origen y va solo a ESPERA.</div>
+    <div class="row"><span>Velocidad (PWM)</span><b id="velTxt">—</b></div>
+    <input type="range" id="vel" min="0" max="100" step="5" value="40">
+    <div class="row"><span>Espera con el SCARA en reposo antes de mover la faja</span><b id="espTxt">—</b></div>
+    <input type="range" id="esp" min="0" max="5" step="0.5" value="1">
+    <div class="row"><label for="auto">Reanudar sola al retirar el limón (sin SCARA)</label><input type="checkbox" id="auto"></div>
+    <div class="row"><span>Sentido de la faja</span><b id="sentTxt">—</b></div>
+    <div class="btns"><button id="sAde" data-a="sentido" data-v="0">▶ Adelante</button><button id="sAtr" data-a="sentido" data-v="1">◀ Atrás</button></div>
+    <div class="msg" id="sentMsg">Se cambia con la faja parada. Hacia atrás la faja solo se mueve: el sensor no frena ni clasifica.</div>
+    <div class="ack" id="ack">Ver los datos no necesita PIN; los mandos sí. Viajan por internet: tablero → HiveMQ → ESP32 → PIC.</div>
+  </section>
+</div>
+
+<div class="grid" id="v2s" hidden>
+  <section class="card">
+    <h2>Clasificación</h2>
+    <div class="caja"><div class="big" id="clase">—</div><div><div id="claseTxt">Sin limones clasificados</div><div class="sub" id="claseSub"></div></div></div>
+    <div class="dos"><div><b class="cA" id="nA">0</b><span>caja A · buenas</span></div><div><b class="cB" id="nB">0</b><span>caja B · descarte</span></div></div>
+    <div class="row"><span>Sin respuesta a tiempo</span><b id="nTarde">—</b></div>
+  </section>
+  <section class="card">
+    <h2>SCARA</h2>
+    <div class="luces"><div class="luz" id="lRec">RECOGER</div><div class="luz" id="lCaja">CAJA A</div><div class="luz" id="lOcu">OCUPADO</div><div class="luz" id="lLis">LISTO</div></div>
+    <div class="sub" id="scTxt">—</div>
+    <div class="msg" style="margin-top:8px">Si dice "no respondió": el Arduino debe estar en modo PIC (<i>MODO_PIC ARMAR</i>) y en ESPERA.</div>
+  </section>
+  <section class="card">
+    <h2>Modo de trabajo</h2>
+    <label class="chk"><input type="checkbox" class="modo" data-b="1">Clasificar con la cámara</label>
+    <label class="chk"><input type="checkbox" class="modo" data-b="2">Retirar el limón con el SCARA</label>
+    <label class="chk"><input type="checkbox" class="modo" data-b="4">Alarma de atasco (necesita los dos encoders)</label>
+    <div class="msg" style="margin-top:10px">Para el ciclo completo marquen las dos primeras. Sin nada marcado la planta frena y espera que retiren el limón a mano.</div>
+  </section>
+</div>
+
+<h2 class="sec" id="pruebas">Pruebas</h2>
+<div class="grid">
+  <section class="card">
+    <h2>Pruebas sin mover la faja</h2>
+    <div class="prueba">
+      <button id="pCiclo" data-a="ciclo">Ciclo completo con el limón del nido<small>Foto, red neuronal y SCARA a su caja. La faja no se mueve y al final queda en PARADA.</small></button>
+      <button id="pA" data-a="probar" data-v="1">Probar SCARA · caja A<small>Solo el brazo: recoge del nido y deja en A, sin cámara.</small></button>
+      <button id="pB" data-a="probar" data-v="2">Probar SCARA · caja B<small>Igual, hacia la caja B.</small></button>
+      <button id="pClas" data-a="clasificar">Clasificar ahora (solo cámara)<small>Toma la foto y muestra la decisión. No avisa al PIC ni mueve nada.</small></button>
+    </div>
+    <div class="why" id="pWhy"></div>
+    <div class="ack" id="pAck"></div>
+  </section>
+  <section class="card">
+    <h2>Orden de prueba recomendado</h2>
+    <div class="msg" style="font-size:13.5px;color:var(--ink);line-height:1.6">
+      1. Limón en el nido → <b>Clasificar ahora</b>: revisen la caja y la confianza.<br>
+      2. Marquen <b>SCARA</b> → <b>Probar caja A</b> y <b>B</b>: miren las 4 luces y que el brazo vuelva a ESPERA.<br>
+      3. Marquen <b>Cámara</b> y <b>SCARA</b> → <b>Ciclo completo con el limón del nido</b>.<br>
+      4. Recién entonces <b>Marcha</b> con limones en la faja.<br>
+      5. Revisen <b>Tiempos</b> y descarguen el CSV para el informe.
+    </div>
+  </section>
+  <section class="card">
+    <h2>Resultado de la última prueba</h2>
+    <div class="diag" id="pRes"><span>Aún no hay pruebas en esta sesión.</span><span></span></div>
+  </section>
+</div>
+
+<h2 class="sec" id="tiempos">Tiempos del ciclo</h2>
+<div class="grid">
+  <section class="card" style="grid-column:1/-1">
+    <h2>Medidos por el tablero <span style="text-transform:none;letter-spacing:0;font-weight:400">(cada 1 s, con el retardo de internet · el tiempo de la red neuronal lo mide la ESP32 en ms)</span></h2>
+    <div class="tbl"><table><thead><tr><th>Tramo</th><th>Último</th><th>Promedio</th><th>Mínimo</th><th>Máximo</th><th>N</th></tr></thead><tbody id="tTiem"></tbody></table></div>
+    <div class="row"><button id="tCsv">Descargar ciclos (CSV)</button><button id="tBorrar">Borrar mediciones</button></div>
+    <div class="msg" id="tMsg">Se llena sola con cada limón y con cada prueba. Se borra al recargar la página. Para medidas finas (±0,25 s) usen la página local de la ESP32.</div>
+  </section>
+</div>
+
+<h2 class="sec" id="senales">Señales</h2>
+<div class="grid">
+  <section class="card" style="grid-column:1/-1">
+    <h2>Diagrama de tiempos · últimos <span id="sVent">60</span> s</h2>
+    <canvas id="diagS"></canvas>
+    <div class="row"><span><button id="sMenos">− zoom</button> <button id="sMas">+ zoom</button> <button id="sPausa">Pausar</button></span><button id="sCsv">Descargar señales (CSV, 10 min)</button></div>
+  </section>
+</div>
+
+<h2 class="sec" id="faja">Faja y encoders</h2>
+<section>
+  <h2 class="mh" id="m1h" hidden>Motor 1</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="k">Velocidad</div><div class="v" id="kVel">—<small>mm/s</small></div></div>
+    <div class="kpi"><div class="k">Eje de la faja</div><div class="v" id="kRpm">—<small>rpm</small></div></div>
+    <div class="kpi"><div class="k">Motor</div><div class="v" id="kRpmM">—<small>rpm</small></div></div>
+    <div class="kpi"><div class="k">Sentido</div><div class="v" id="kSent">—</div></div>
+    <div class="kpi"><div class="k">Aceleración</div><div class="v" id="kAcel">—<small>mm/s²</small></div></div>
+    <div class="kpi"><div class="k">Distancia recorrida</div><div class="v" id="kDist">—<small>m</small></div></div>
+    <div class="kpi"><div class="k">Pulsos del encoder</div><div class="v" id="kPos">—</div></div>
+    <div class="kpi"><div class="k">Tiempo de frenado</div><div class="v" id="kTf">—<small>ms</small></div></div>
+    <div class="kpi"><div class="k">Distancia de frenado</div><div class="v" id="kDf">—<small>mm</small></div></div>
+    <div class="kpi"><div class="k">Separación entre limones</div><div class="v" id="kSep">—<small>mm</small></div></div>
+    <div class="kpi"><div class="k">Limones por minuto</div><div class="v" id="kMin">—</div></div>
+    <div class="kpi"><div class="k">Tiempo en marcha</div><div class="v" id="kMar">—<small>%</small></div></div>
+    <div class="kpi" id="kCorrBox" hidden><div class="k">Corriente del motor</div><div class="v" id="kCorr">—<small>A</small></div></div>
+  </div>
+</section>
+
+<section id="m2s" hidden>
+  <h2 class="mh">Motor 2</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="k">Velocidad</div><div class="v" id="k2Vel">—<small>mm/s</small></div></div>
+    <div class="kpi"><div class="k">Eje</div><div class="v" id="k2Rpm">—<small>rpm</small></div></div>
+    <div class="kpi"><div class="k">Motor</div><div class="v" id="k2RpmM">—<small>rpm</small></div></div>
+    <div class="kpi"><div class="k">Sentido</div><div class="v" id="k2Sent">—</div></div>
+    <div class="kpi"><div class="k">Distancia recorrida</div><div class="v" id="k2Dist">—<small>m</small></div></div>
+    <div class="kpi"><div class="k">Pulsos del encoder</div><div class="v" id="k2Pos">—</div></div>
+    <div class="kpi"><div class="k">Distancia de frenado</div><div class="v" id="k2Df">—<small>mm</small></div></div>
+    <div class="kpi"><div class="k">Diferencia motor 1 − 2</div><div class="v" id="kDif">—<small>%</small></div></div>
+  </div>
 </section>
 
 <div class="grid">
-  <section class="card"><h2>Estado de la planta</h2><div class="big s0" id="estado">—</div><div class="sub" id="estadoSub"></div></section>
-  <section class="card"><h2>Último limón</h2><div class="big" id="clase">—</div><div class="sub" id="claseSub">Sin clasificaciones todavía.</div></section>
-  <section class="card"><h2>Conteo</h2><div class="big"><span class="cA" id="nA">0</span> <span style="color:var(--mute);font-size:18px">A</span> · <span class="cB" id="nB">0</span> <span style="color:var(--mute);font-size:18px">B</span></div><div class="sub" id="conteoSub">0 detectadas · 0 por minuto</div></section>
-  <section class="card"><h2>Faja</h2><div class="big"><span id="vel">—</span> <span style="color:var(--mute);font-size:16px">mm/s</span></div><div class="sub" id="fajaSub">PWM — · corriente —</div></section>
-</div>
-
-<div class="grid">
-  <section class="card">
-    <h2>Telecontrol</h2>
-    <div class="btns">
-      <button class="go" data-c="marcha" disabled>Marcha</button>
-      <button class="stop" data-c="paro" disabled>Paro</button>
-      <button data-c="reanudar" disabled>Reanudar</button>
-      <button data-c="alarma" disabled>Borrar alarma</button>
-      <button data-c="sentido:0" id="sAde" disabled>▶ Adelante</button>
-      <button data-c="sentido:1" id="sAtr" disabled>◀ Atrás</button>
-    </div>
-    <div class="row"><span>Sentido de la faja</span><b id="sentTxt">—</b></div>
-    <div class="row"><span>Velocidad (PWM)</span><b id="velTxt">— %</b></div>
-    <input type="range" id="velR" min="0" max="100" step="5" value="40" disabled>
-    <div class="msg" id="ack">Los comandos viajan por internet: tablero → HiveMQ → ESP32 → PIC. El sentido se cambia con la faja parada.</div>
-  </section>
-  <section class="card" style="grid-column:span 2;min-width:0">
-    <h2>Velocidad y corriente · últimos 2 minutos</h2>
+  <section class="card" style="grid-column:1/-1">
+    <h2>Velocidad de la banda · últimos 60 s <span style="text-transform:none;letter-spacing:0;font-weight:400"><i class="ley" style="background:#5aa9ff"></i>motor 1<span id="ley2" hidden><i class="ley" style="background:#5fd38d"></i>motor 2</span><i class="ley" style="background:#f08a24"></i>detecciones</span></h2>
     <canvas id="graf"></canvas>
   </section>
 </div>
 
+<h2 class="sec" id="camara">Cámara</h2>
+<div class="grid">
+  <section class="card">
+    <h2>Última foto que vio la red</h2>
+    <img id="ultima" alt="Todavía no llega ninguna foto" style="width:192px;height:192px;image-rendering:pixelated;border-radius:8px;background:#0002;display:block">
+    <div class="row"><span id="ultCap">—</span><a id="ultBajar" download="ultima.jpg" href="#" hidden style="color:var(--blue)">Descargar</a></div>
+    <div class="msg">Llega por internet en cada clasificación (96 × 96 px, lo mismo que recibe el modelo). Si con la faja en marcha sale movida, corrida del centro u oscura, ahí está el error.</div>
+    <div class="btns" style="margin-top:8px"><button data-a="clasificar">Clasificar ahora</button></div>
+  </section>
+  <section class="card">
+    <h2>Ajustes de la cámara</h2>
+    <div class="diag">
+      <span>Centro del nido (X / Y)</span><span id="cCen">—</span>
+      <span>Tamaño del recorte</span><span id="cTam">—</span>
+      <span>Color sano mínimo para A (clasificador por color)</span><span id="cUmb">—</span>
+    </div>
+    <h2 style="margin-top:14px">Tamaño y forma (sin IA)</h2>
+    <div class="diag">
+      <span>Control activo</span><span id="gOn">—</span>
+      <span>Ancho mínimo</span><span id="gAn">—</span>
+      <span>Largo máximo</span><span id="gLa">—</span>
+      <span>Largo ÷ ancho máximo</span><span id="gRel">—</span>
+      <span>Color ajeno máximo</span><span id="gAj">—</span>
+      <span>Calibración</span><span id="gMm">—</span>
+    </div>
+    <div class="msg" style="margin-top:8px">Color ajeno: si el centro del nido tiene más de ese % de un color vivo que un limón no tiene, va como <b>no es limón</b>. Tamaño y forma: solo cuando la red dice <b>buena</b>; fuera de los límites va como <b>no es limón</b> (alarma 5, la garra no se mueve).</div>
+  </section>
+  <section class="card">
+    <h2>Vista en vivo y fotos para entrenar</h2>
+    <div class="msg" style="color:var(--ink);font-size:13.5px;line-height:1.6">La vista en vivo de la cámara, la captura de fotos <i>buena / mala / otro</i>, la calibración con regla y los cambios de estos ajustes se hacen en la página local de la ESP32 (red <b>Clasificadora-Naranjas</b>, <b>http://192.168.4.1</b>). Por internet solo viaja la última foto, para no cargar la conexión del hotspot.</div>
+  </section>
+</div>
+
+<h2 class="sec" id="diagnostico">Diagnóstico y ajustes</h2>
+<div class="grid">
+  <section class="card">
+    <h2>Corriente de los motores · ACS712</h2>
+    <div class="diag"><span>Sensibilidad</span><span id="dSens">—</span><span>Límite de alarma</span><span id="dLim">—</span><span>Lectura del ADC</span><span id="dAdc">—</span><span>Cero (motores parados)</span><span id="dCero">—</span></div>
+    <div class="row"><button data-a="cero">Medir el cero</button><span></span></div>
+    <div class="msg" style="margin-top:8px">Midan el cero con la faja parada. La sensibilidad y el límite se cambian en la página local.</div>
+  </section>
+  <section class="card">
+    <h2>Últimos frenados <span style="text-transform:none;letter-spacing:0;font-weight:400">(desde la interrupción hasta que la faja para)</span></h2>
+    <table><thead><tr><th>Limón</th><th>Tiempo</th><th>Distancia</th><th>Vel. previa</th><th>&lt; 50 ms</th></tr></thead><tbody id="tFren"><tr><td colspan="5" style="text-align:left;color:var(--mute)">Aún no hay frenados.</td></tr></tbody></table>
+  </section>
+  <section class="card">
+    <h2>Enlace con el PIC</h2>
+    <div class="diag">
+      <span>Tramas recibidas</span><span id="dTr">—</span>
+      <span>Última trama hace</span><span id="dEd">—</span>
+      <span>Errores de checksum (ESP32)</span><span id="dEc">—</span>
+      <span>Errores de recepción (PIC)</span><span id="dEr">—</span>
+      <span>Desbordes del planificador</span><span id="dOv">—</span>
+      <span>mm por pulso</span><span id="dMm">—</span>
+    </div>
+  </section>
+  <section class="card">
+    <h2>ESP32</h2>
+    <div class="diag">
+      <span>Clasificador</span><span id="dMet">—</span>
+      <span>Última inferencia</span><span id="dInf">—</span>
+      <span>Clasificaciones</span><span id="dNcl">—</span>
+      <span>Memoria libre (mínima)</span><span id="dHeap">—</span>
+      <span>PSRAM libre</span><span id="dPs">—</span>
+      <span>Señal WiFi</span><span id="dRssi">—</span>
+      <span>Hotspot con internet</span><span id="dRed">—</span>
+      <span>Equipos en la red de la ESP32</span><span id="dCli">—</span>
+      <span>IP en el hotspot</span><span id="dIp">—</span>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Ajustes del encoder</h2>
+    <div class="diag">
+      <span>Reducción del motor</span><span id="cRed">—</span>
+      <span>mm por vuelta del eje</span><span id="cMm">—</span>
+      <span>Sentido motor 1 / motor 2</span><span id="cInv">—</span>
+    </div>
+    <div class="row"><button id="borrar">Borrar contadores</button><span></span></div>
+    <div class="msg" id="msg">Los ajustes se cambian en la página local. Borrar contadores pone en cero los limones, los conteos A/B y los frenados.</div>
+  </section>
+</div>
+
+<h2 class="sec" id="registro">Registro</h2>
+<div class="grid">
+  <section class="card" style="grid-column:1/-1">
+    <h2>Limones clasificados desde que se abrió el tablero</h2>
+    <div class="tbl"><table><thead><tr><th>Hora</th><th>Limón</th><th>Caja</th><th>Confianza</th><th>Clasificación</th><th>Respuesta al PIC</th><th>Método</th></tr></thead>
+    <tbody id="reg"><tr><td colspan="7" style="text-align:left;color:var(--mute)">Aún no llega ninguno.</td></tr></tbody></table></div>
+    <div class="row"><button id="rCsv">Descargar registro (CSV)</button><span></span></div>
+  </section>
+  <section class="card" style="grid-column:1/-1"><h2>Alarmas</h2><div id="alarmas" class="sub">Sin alarmas registradas.</div></section>
+</div>
+
+<h2 class="sec" id="conexion">Conexión</h2>
 <section class="card">
-  <h2>Registro de limones clasificados</h2>
-  <div class="tbl"><table><thead><tr><th>Hora</th><th>Limón</th><th>Caja</th><th>Confianza</th><th>Clasificación</th><th>Respuesta al PIC</th><th>Método</th></tr></thead>
-  <tbody id="reg"><tr><td colspan="7" style="color:var(--mute)">Aún no llega ninguna.</td></tr></tbody></table></div>
+  <h2>Broker MQTT de HiveMQ</h2>
+  <div class="cfg">
+    <label class="f">Broker<input id="host" autocomplete="off"></label>
+    <label class="f">Prefijo de temas<input id="base" autocomplete="off"></label>
+    <button id="conectar" class="go">Reconectar</button>
+  </div>
+  <details style="margin-top:10px"><summary class="sub">Usuario y clave (solo si usan un clúster privado de HiveMQ Cloud)</summary>
+    <div class="cfg" style="margin-top:8px">
+      <label class="f">Usuario<input id="user" autocomplete="off"></label>
+      <label class="f">Clave<input id="pass" type="password" autocomplete="off"></label>
+    </div>
+  </details>
+  <div class="msg" id="cMsg" style="margin-top:8px">Se conecta solo al abrir la página.</div>
 </section>
-<section class="card"><h2>Alarmas</h2><div id="alarmas" class="sub">Sin alarmas registradas.</div></section>
 </div>
 
 <script>
-const $=i=>document.getElementById(i);
+const $=id=>document.getElementById(id);
 // Valores por defecto: deben coincidir con MQTT_BASE y MQTT_HOST de ESP32_planta/secretos.h
-const HOST_DEF='broker.hivemq.com', BASE_DEF='naranjas-uni-x7k29q/planta';
-let BASE=BASE_DEF;
+const HOST_DEF='broker.hivemq.com',BASE_DEF='naranjas-uni-x7k29q/planta';
+let BASE=BASE_DEF,cli=null;
 const NOM=['PARADA','EN MARCHA','FRENANDO','LIMÓN EN ESTACIÓN','ALARMA','CLASIFICANDO','SCARA RETIRANDO'];
-let cli=null, hist=[], filas=[], alarmas=[], tEstado=0, arrastrando=false;
+const ALT=['','La banda no se mueve con el PWM encendido: atasco, encoder suelto o paro de emergencia.','El SCARA no respondió o no llegó a ESPERA (OCUPADO alto): revisen que el Arduino esté en modo PIC (MODO_PIC ARMAR), los 4 cables y el GND común.','Sobrecorriente en los motores de la faja.','El SCARA avisó LISTO pero el limón sigue en el nido: revisen el agarre y el sensor.','La cámara vio algo que no es un limón: retírenlo del nido y borren la alarma (la garra no se movió).'];
+const FASE=['espera al SCARA libre','pone la caja y pide recoger','espera que el SCARA conteste','el SCARA retira el limón','espera el nido libre','el SCARA vuelve a reposo','espera y arranca la faja'];
+const hist=[],marcas=[];let enLinea=null,ultN=null,vUlt=null,arrastrando=false,arrEsp=false,tCompleto=0,tDatos=0,fotoUrl=null;
+const f1=(x,d=1)=>(x===null||x===undefined||isNaN(x))?'—':Number(x).toFixed(d);
+const tx=(id,v)=>{$(id).textContent=(v===null||v===undefined||v==='')?'—':v;};
+const esc=s=>String(s===undefined||s===null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const conectado=()=>!!(cli&&cli.connected);
+// ---------------------------------------------------------------- mandos (por MQTT, con PIN)
+function avisar(t,color){['ack','pAck'].forEach(i=>{$(i).textContent=t;$(i).style.color=color||'';});}
+function cmd(a,v){
+  if(!conectado()){avisar('Sin conexión con la nube.','var(--bad)');return false;}
+  const pin=$('pin').value.trim();
+  if(!pin){avisar('Escriban el PIN de mando (en Mando) para telecomandar.','var(--warn)');$('pin').focus();return false;}
+  const orden=a+(v!==undefined&&v!==null&&v!==''?':'+v:'');
+  cli.publish(BASE+'/cmd',pin+'|'+orden);avisar(horaYa()+' · enviado "'+orden+'", esperando a la planta…');return true;
+}
+document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>cmd(b.dataset.a,b.dataset.v));
+$('bHome').onclick=()=>{if(confirm('¿El brazo está de verdad en HOME (estirado sobre el nido y la Z arriba)? El SCARA tomará ese punto como origen y se moverá a ESPERA.'))cmd('home');};
+document.querySelectorAll('.modo').forEach(c=>c.onchange=()=>{let m=0;document.querySelectorAll('.modo').forEach(x=>{if(x.checked)m|=+x.dataset.b;});cmd('modo',m);});
+$('vel').oninput=e=>{arrastrando=true;$('velTxt').textContent=e.target.value+' %';};
+$('vel').onchange=e=>{arrastrando=false;cmd('vel',e.target.value);};
+$('auto').onchange=e=>cmd('auto',e.target.checked?1:0);
+$('esp').oninput=e=>{arrEsp=true;$('espTxt').textContent=(+e.target.value).toFixed(1).replace('.',',')+' s';};
+$('esp').onchange=e=>{arrEsp=false;cmd('espera',Math.round(e.target.value*10));};
+$('borrar').onclick=()=>{if(cmd('contadores')){hist.length=0;marcas.length=0;$('msg').textContent='Contadores en cero.';}};
+function bloquear(){if(conectado())return;document.querySelectorAll('[data-a],#bHome,#vel,#esp,#auto,.modo').forEach(b=>b.disabled=true);}
+
+// ---------------------------------------------------------------- estado resumido (ESP32 con el firmware anterior)
+function deResumen(r){
+  const cl=r.clase==='A'?1:(r.clase==='B'?2:(r.clase&&r.clase!=='-'?3:0)),m2=r.vel2>0;
+  return {resumen:true,enlace:r.enlace,estado:r.est,cod_alarma:r.alarma,naranja:r.naranja,pwm:r.pwm,pwm_set:r.consigna,retro:r.retro,uptime:r.up,
+    vel:r.vel,vel_cps:r.vel>0?10:0,naranjas:r.naranjas,por_min:r.por_min,t_fren:r.t_fren_ms,n_med:r.t_fren_ms>0?1:0,corriente:r.corriente,
+    clase:cl,conf:r.conf,f2:(r.modo||0)|((r.scara||0)<<3),fase:0,nA:r.nA,nB:r.nB,v2:1,
+    vision:{cam:1,clase:cl,conf:r.conf,ms:r.t_clasif_ms},cfg:{vel:r.consigna,modo:r.modo},nube:{cfg:1,wifi:1,mqtt:1},
+    m2:m2?{vel:r.vel2,vel_cps:10}:null,frenados:[],diag:{}};
+}
+
+// ---------------------------------------------------------------- dibujar el estado (igual que la página local)
+function sub(d){
+  if(d.estado===3) return d.naranja?(d.auto?'Retiren el limón: la faja sigue sola 1 s después.':'Retiren el limón y pulsen Reanudar.'):(d.auto?'Nido libre, reanudando…':'Nido libre: pulsen Reanudar.');
+  if(d.estado===4) return ALT[d.cod_alarma]||ALT[1];
+  if(d.estado===5) return (d.f2&2)&&(d.f2&32)?'Esperando que el SCARA esté en ESPERA para tomar la foto (OCUPADO alto).':'La ESP32 toma la foto y decide la caja.';
+  if(d.estado===6) return 'Caja '+(d.clase===2?'B':'A')+': '+(FASE[d.fase]||'')+'.';
+  if(d.estado===0) return 'Pulsen Marcha para mover la faja.';
+  if(d.estado===2) return 'Freno aplicado, midiendo la parada…';
+  return 'Esperando el próximo limón.';
+}
+const letraClase=c=>c===1?'A':(c===2?'B':(c===3?'no es limón':'—'));
+function pintar(d){
+  const ok=!!d.enlace,cfg=d.cfg||{},v=d.vision||{},dg=d.diag||{},nb=d.nube||{};
+  $('aviso').hidden=!d.resumen;
+  $('enlace').classList.toggle('ok',ok);
+  $('enlaceTxt').textContent=ok?'PIC conectado':'Sin datos del PIC';
+  $('uptime').textContent=d.uptime!==undefined?'ESP32 encendida hace '+d.uptime+' s':'—';
+  const e=$('estado');e.textContent=ok?NOM[d.estado]||'?':'SIN ENLACE';e.className='estado s'+(ok?d.estado:0);if(ok&&d.estado===4&&d.cod_alarma)e.textContent='ALARMA '+d.cod_alarma;
+  $('estadoSub').textContent=ok?sub(d):'La ESP32 está en línea pero no recibe datos del PIC: revisen la UART (TX, RX, GND y OE del TXS0108E).';
+  $('pwm').textContent=d.pwm+' % (consigna '+d.pwm_set+' %)';
+  $('bola').classList.toggle('si',!!d.naranja);
+  $('naranja').textContent=d.naranja?'Sí':'No';
+  tx('nN',d.naranjas);
+  const con=conectado();
+  if(!arrastrando&&cfg.vel!==undefined){$('vel').value=cfg.vel;$('velTxt').textContent=cfg.vel+' %';}
+  $('vel').disabled=!con;
+  if(cfg.espera!==undefined){if(!arrEsp){$('esp').value=cfg.espera/10;$('espTxt').textContent=(cfg.espera/10).toFixed(1).replace('.',',')+' s';}$('esp').disabled=!con;}
+  else{$('espTxt').textContent='—';$('esp').disabled=true;}
+  $('auto').checked=!!cfg.auto;$('auto').disabled=!con||cfg.auto===undefined;
+  $('sentTxt').textContent=d.retro?'atrás':'adelante';$('sentTxt').style.color=d.retro?'var(--warn)':'';
+  $('sAde').classList.toggle('go',!d.retro);$('sAtr').classList.toggle('go',!!d.retro);
+  $('sAde').disabled=$('sAtr').disabled=!(con&&ok&&(d.estado===0||d.estado===4));
+  document.querySelectorAll('[data-a="marcha"],[data-a="paro"],[data-a="reanudar"],[data-a="alarma"],[data-a="cero"],#borrar').forEach(b=>b.disabled=!con);
+  $('kVel').firstChild.nodeValue=f1(Math.abs(d.vel));
+  $('kRpm').firstChild.nodeValue=f1(d.rpm_eje===undefined?undefined:Math.abs(d.rpm_eje));
+  $('kRpmM').firstChild.nodeValue=f1(d.rpm_motor===undefined?undefined:Math.abs(d.rpm_motor),0);
+  $('kSent').textContent=d.vel_cps===undefined?'—':(Math.abs(d.vel_cps)<5?'quieta':((d.resumen?!d.retro:d.vel>0)?'avance':'retroceso'));
+  $('kAcel').firstChild.nodeValue=f1(d.acel,0);
+  $('kDist').firstChild.nodeValue=f1(d.dist_m,3);
+  tx('kPos',d.pos);
+  $('kTf').firstChild.nodeValue=d.n_med?f1(d.t_fren):'—';
+  $('kDf').firstChild.nodeValue=d.n_med?f1(d.d_fren):'—';
+  $('kSep').firstChild.nodeValue=d.sep===null?'—':f1(d.sep,0);
+  tx('kMin',d.por_min);
+  $('kMar').firstChild.nodeValue=f1(d.marcha_pct,0);
+  $('kCorrBox').hidden=d.corriente===null||d.corriente===undefined;
+  if(!$('kCorrBox').hidden)$('kCorr').firstChild.nodeValue=f1(d.corriente,2);
+  $('v2s').hidden=!d.v2;
+  if(v.n!==undefined&&v.n!==vUlt){vUlt=v.n;
+    if(v.n)$('ultCap').textContent=(v.naranja?'Limón '+v.naranja+': ':'Prueba: ')+letraClase(v.clase)+' · '+v.conf+' % · '+v.metodo+(v.area?' · '+Number(v.largo).toFixed(0)+' × '+Number(v.ancho).toFixed(0)+' mm':' · sin fruta visible')+' · color ajeno '+Number(v.ajeno||0).toFixed(0)+' %';
+    $('ultBajar').download='faja_'+String(v.n).padStart(3,'0')+'_'+(v.clase===1?'A':(v.clase===2?'B':'otro'))+'.jpg';}
+  if(d.v2){
+    const c=d.clase,cl=$('clase');cl.textContent=c===1?'A':(c===2?'B':(c===3?'✕':'—'));cl.className='big '+(c===1?'cA':(c===2?'cB':(c===3?'cN':'')));
+    $('claseTxt').textContent=c?('Último limón: '+(c===1?'caja A (buena)':(c===2?'caja B (descarte)':'no es limón'))+(d.f2&128?' · por tiempo vencido':'')):'Sin limones clasificados';
+    $('claseSub').textContent=v.clase?('Confianza '+v.conf+' % · '+v.ms+' ms en clasificar'+(v.resp_ms!==undefined?' · '+v.resp_ms+' ms hasta responder':'')+(v.metodo?' · '+v.metodo:'')+(v.metodo==='color'?' ('+(v.sano*100).toFixed(0)+' % sano)':'')):(v.cam?'Cámara lista.':'Cámara no disponible.');
+    tx('nA',d.nA);tx('nB',d.nB);tx('nTarde',d.tarde);
+    $('lRec').classList.toggle('on',!!(d.f2&8));$('lCaja').classList.toggle('on',!!(d.f2&16));$('lCaja').textContent=d.f2&16?'CAJA B':'CAJA A';
+    $('lOcu').classList.toggle('on',!!(d.f2&32));$('lLis').classList.toggle('on',!!(d.f2&64));
+    $('scTxt').textContent=!(d.f2&2)?'SCARA desactivado: el limón se retira a mano.':(d.estado===6?FASE[d.fase]:'SCARA activado, en espera.');
+    document.querySelectorAll('.modo').forEach(x=>{x.checked=!!(cfg.modo&+x.dataset.b);x.disabled=!con;});
+    tx('dAdc',d.adc===65535?'sin sensor':d.adc);tx('dCero',d.cero);
+  }
+  // ajustes (solo lectura: se cambian en la página local)
+  tx('cCen',cfg.rcx!==undefined?cfg.rcx+' % / '+cfg.rcy+' %':null);tx('cTam',cfg.rl!==undefined?cfg.rl+' %':null);tx('cUmb',cfg.umb!==undefined?cfg.umb+' %':null);
+  const g=d.geo;
+  tx('gOn',g?(g.on?'sí':'no'):null);tx('gAn',g?g.amin+' mm':null);tx('gLa',g?g.lmax+' mm':null);tx('gRel',g?Number(g.rel).toFixed(2):null);tx('gAj',g?g.ajmax+' %':null);tx('gMm',g?Number(g.mmpx).toFixed(3)+' mm por píxel':null);
+  tx('dSens',cfg.sens!==undefined?cfg.sens+' mV/A':null);tx('dLim',cfg.lim!==undefined?(+cfg.lim?Number(cfg.lim).toFixed(1)+' A':'sin alarma'):null);
+  tx('cRed',cfg.reduccion!==undefined?'1:'+cfg.reduccion:null);tx('cMm',cfg.mm!==undefined?cfg.mm+' mm':null);
+  tx('cInv',cfg.inv!==undefined?(cfg.inv?'invertido':'normal')+' / '+(cfg.inv2?'invertido':'normal'):null);
+  const m2=d.m2;
+  $('m2s').hidden=!m2;$('m1h').hidden=!m2;$('ley2').hidden=!m2;
+  if(m2){
+    $('k2Vel').firstChild.nodeValue=f1(Math.abs(m2.vel));
+    $('k2Rpm').firstChild.nodeValue=f1(m2.rpm_eje===undefined?undefined:Math.abs(m2.rpm_eje));
+    $('k2RpmM').firstChild.nodeValue=f1(m2.rpm_motor===undefined?undefined:Math.abs(m2.rpm_motor),0);
+    $('k2Sent').textContent=m2.vel_cps===undefined?'—':(Math.abs(m2.vel_cps)<5?'quieta':((d.resumen?!d.retro:m2.vel>0)?'avance':'retroceso'));
+    $('k2Dist').firstChild.nodeValue=f1(m2.dist_m,3);
+    tx('k2Pos',m2.pos);
+    $('k2Df').firstChild.nodeValue=d.n_med?f1(m2.d_fren):'—';
+    $('kDif').firstChild.nodeValue=f1(m2.dif);
+  }
+  tx('dTr',d.tramas);tx('dEd',d.tramas?d.edad_ms+' ms':null);
+  tx('dEc',d.err_chk);tx('dEr',d.err_rx_pic);tx('dOv',d.overruns);
+  tx('dMm',d.mm_cuenta!==undefined?f1(d.mm_cuenta,4):null);
+  tx('dMet',v.metodo);tx('dInf',v.n?(v.ms+' ms (respuesta al PIC '+v.resp_ms+' ms)'):null);tx('dNcl',v.n);
+  tx('dHeap',dg.heap?(dg.heap+' B ('+dg.heap_min+')'):null);tx('dPs',dg.psram?((dg.psram/1048576).toFixed(1)+' MB'):null);
+  tx('dRssi',dg.rssi?(dg.rssi+' dBm'+(dg.rssi>-60?' · buena':dg.rssi>-75?' · regular':' · débil')):null);tx('dCli',dg.clientes);
+  tx('dRed',nb.red);tx('dIp',nb.wifi&&nb.ip?nb.ip:null);
+  pruebas(d,ok,con);
+  const tb=$('tFren');
+  if(d.frenados&&d.frenados.length){tb.innerHTML=d.frenados.map(f=>'<tr><td>#'+esc(f[0])+'</td><td>'+f1(f[1])+' ms</td><td>'+f1(f[2])+' mm</td><td>'+f1(Math.abs(f[3]),0)+' mm/s</td><td><span class="tag '+(f[1]<50?'ok':'bad')+'">'+(f[1]<50?'sí':'no')+'</span></td></tr>').join('');}
+  const t=Date.now()/1000;
+  if(ok){hist.push([t,Math.abs(d.vel),m2?Math.abs(m2.vel):null]);if(ultN!==null&&d.naranjas>ultN)marcas.push(t);ultN=d.naranjas;tiempos(d,t);senal(d,t);}
+  while(hist.length&&hist[0][0]<t-60)hist.shift();
+  while(marcas.length&&marcas[0]<t-60)marcas.shift();
+  dibujar(t);
+  if(!sPausa)dibSen(t);
+  bloquear();
+}
+// ---------------------------------------------------------------- pruebas
+let pUlt=null;
+function pruebas(d,ok,con){
+  const e=d.estado,quieta=ok&&(e===0||e===3),sc=!!(d.f2&2),vi=!!(d.f2&1),cam=!(d.vision&&d.vision.cam===0);
+  $('pCiclo').disabled=!(con&&quieta&&d.naranja);$('pA').disabled=$('pB').disabled=!(con&&quieta&&sc);
+  document.querySelectorAll('[data-a="clasificar"]').forEach(b=>b.disabled=!(con&&cam));
+  let w='';
+  if(!con)w='Sin conexión con la nube.';
+  else if(!ok)w='Sin enlace con el PIC.';
+  else if(!quieta)w='Las pruebas se hacen con la faja parada (pulsen Paro).';
+  else if(!d.naranja)w='Pongan un limón en el nido para el ciclo completo.';
+  else if(!sc)w='Marquen "Retirar el limón con el SCARA" para probar el brazo.';
+  else if(!vi)w='Sin "Clasificar con la cámara" el ciclo usa la caja por defecto.';
+  $('pWhy').textContent=w;
+  const hOk=con&&ok&&e===0&&sc&&!!(d.f2&32)&&!(d.f2&8);$('bHome').disabled=!hOk;
+  $('homeWhy').textContent=!ok?'Sin enlace con el PIC.':(d.f2&8)&&(d.f2&16)&&!(d.f2&64)?'Avisando al SCARA que está en HOME…':e!==0?'Para usarlo, la faja debe estar en PARADA (pulsen Paro).':!sc?'Marquen "Retirar el limón con el SCARA".':!(d.f2&32)?'El SCARA ya está en ESPERA y listo (OCUPADO bajo).':'El brazo no está armado. Si está en HOME, púlsenlo para llevarlo a ESPERA.';
+}
+// ---------------------------------------------------------------- tiempos del ciclo
+const TR=[['Detección → caja decidida (freno + foto + red)','det','cls'],['Orden al SCARA → OCUPADO','sc','ocu'],['SCARA baja, agarra y sube (OCUPADO → LISTO)','ocu','lis'],
+  ['Va a la caja y vuelve a ESPERA','lis','rep'],['Espera y arranque de la faja','rep','fin'],['Faja detenida por el limón','det','fin'],['Entre un limón y el siguiente','prev','det']];
+const est={},ciclos=[];let ant=null,cur=null,prevDet=null,vN=null;
+function acum(k,x){if(x===undefined||x===null||!(x>=0))return;const s=est[k]||(est[k]={n:0,s:0,mn:1e9,mx:0,u:0});s.n++;s.s+=x;s.mn=Math.min(s.mn,x);s.mx=Math.max(s.mx,x);s.u=x;}
+function tiempos(d,t){
+  const e=d.estado,a=ant?ant.estado:e;
+  if(ant&&d.vision.n!==vN&&vN!==null&&d.vision.n!==undefined)acum('inf',d.vision.ms/1000);vN=d.vision.n;
+  if(!ant){ant=d;pintarTiem();return;}
+  if(a===1&&(e===2||e===3||e===5||e===6))cur={det:t,prev:prevDet,man:false};
+  else if(!cur&&(e===5||e===6)&&a!==5&&a!==6)cur={det:t,prev:null,man:true};
+  if(cur){
+    if(cur.cls===undefined&&a===5&&e!==5)cur.cls=t;
+    if(cur.sc===undefined&&e===6){cur.sc=t;if(cur.cls===undefined&&!cur.man)cur.cls=t;}
+    if(cur.sc!==undefined&&cur.ocu===undefined&&(d.f2&32))cur.ocu=t;
+    if(cur.ocu!==undefined&&cur.lis===undefined&&(d.f2&64))cur.lis=t;
+    if(cur.lis!==undefined&&cur.rep===undefined&&!(d.f2&96))cur.rep=t;
+    if(e===4){cur=null;}
+    else if((e===0||e===1)&&a!==0&&a!==1){
+      cur.fin=t;cur.caja=d.clase===2?'B':(d.clase===1?'A':'');cur.conf=d.vision.conf;cur.ok=true;
+      if(!cur.man){prevDet=cur.det;}
+      TR.forEach(r=>{if(cur[r[1]]!==undefined&&cur[r[2]]!==undefined&&cur[r[1]]!==null)acum(r[0],cur[r[2]]-cur[r[1]]);});
+      ciclos.push(cur);if(ciclos.length>500)ciclos.shift();
+      if(cur.man)pUlt=cur;cur=null;pintarTiem();pintarPrueba();
+    }
+  }
+  if(e===4&&a!==4){pUlt={alarma:d.cod_alarma,t:t};pintarPrueba();}
+  ant=d;
+}
+const fs=x=>x===undefined||x===null?'—':x.toFixed(2).replace('.',',')+' s';
+function pintarTiem(){
+  const filas=TR.map(r=>[r[0],est[r[0]]]).concat([['Red neuronal en la ESP32 (medido en ms)',est.inf]]);
+  $('tTiem').innerHTML=filas.map(f=>{const s=f[1];return '<tr><td>'+f[0]+'</td>'+(s?('<td>'+fs(s.u)+'</td><td>'+fs(s.s/s.n)+'</td><td>'+fs(s.mn)+'</td><td>'+fs(s.mx)+'</td><td>'+s.n+'</td>'):'<td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">0</td>')+'</tr>';}).join('');
+}
+function pintarPrueba(){
+  const p=pUlt;if(!p)return;
+  if(p.alarma!==undefined){$('pRes').innerHTML='<span>Resultado</span><span style="color:var(--bad)">Alarma '+esc(p.alarma)+'</span><span>Qué pasó</span><span>'+(ALT[p.alarma]||'')+'</span>';return;}
+  const f=(a,b)=>p[a]!==undefined&&p[b]!==undefined?fs(p[b]-p[a]):'—';
+  $('pRes').innerHTML='<span>Resultado</span><span style="color:var(--ok)">Terminó bien'+(p.caja?' · caja '+p.caja:'')+'</span>'+
+    (p.cls!==undefined?'<span>Foto y red neuronal</span><span>'+f('det','cls')+'</span>':'')+
+    '<span>SCARA contestó en</span><span>'+f('sc','ocu')+'</span><span>Hasta LISTO</span><span>'+f('ocu','lis')+'</span>'+
+    '<span>Caja y vuelta a ESPERA</span><span>'+f('lis','rep')+'</span><span>Total</span><span>'+f('det','fin')+'</span>';
+}
+function bajar(nombre,txt){const u=URL.createObjectURL(new Blob(['﻿'+txt],{type:'text/csv'}));const a=document.createElement('a');a.href=u;a.download=nombre;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000);}
+const hora=t=>new Date(t*1000).toLocaleTimeString('es-PE');
+const horaYa=()=>new Date().toLocaleTimeString('es-PE',{hour12:false});
+$('tCsv').onclick=()=>{const c=x=>x===undefined||x===null?'':x.toFixed(2);
+  bajar('ciclos_limones_nube.csv','hora;tipo;caja;confianza;deteccion_a_caja_s;orden_a_ocupado_s;ocupado_a_listo_s;listo_a_espera_s;espera_faja_s;faja_detenida_s;entre_limones_s\n'+
+  ciclos.map(k=>[hora(k.det),k.man?'prueba':'faja',k.caja,k.conf,c(k.cls-k.det),c(k.ocu-k.sc),c(k.lis-k.ocu),c(k.rep-k.lis),c(k.fin-k.rep),c(k.fin-k.det),k.prev?c(k.det-k.prev):''].join(';').replace(/NaN/g,'')).join('\n'));};
+$('tBorrar').onclick=()=>{for(const k in est)delete est[k];ciclos.length=0;prevDet=null;pintarTiem();$('tMsg').textContent='Mediciones borradas.';};
+// ---------------------------------------------------------------- diagrama de señales (todo en el navegador)
+const SEN=[['Faja en marcha','#5aa9ff'],['Limón en el nido','#f2c94c'],['Clasificando','#b48cff'],['RECOGER (RD0)','#f08a24'],['CAJA B (RD1)','#f08a24'],['OCUPADO (RD2)','#3cc47c'],['LISTO (RD3)','#3cc47c'],['Alarma','#ff5d5d']];
+const mues=[];let sVent=60,sPausa=false;
+function senal(d,t){const b=(d.pwm>0?1:0)|(d.naranja?2:0)|(d.estado===5?4:0)|(d.f2&8?8:0)|(d.f2&16?16:0)|(d.f2&32?32:0)|(d.f2&64?64:0)|(d.estado===4?128:0);
+  mues.push([t,b]);while(mues.length&&mues[0][0]<t-600)mues.shift();}
+function dibSen(t){
+  const c=$('diagS'),r=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+  c.width=r.width*dpr;c.height=r.height*dpr;const g=c.getContext('2d');g.scale(dpr,dpr);
+  const W=r.width,H=r.height,L=118,B=20,rh=(H-B-4)/SEN.length,t0=t-sVent,X=s=>L+(s-t0)/sVent*(W-L-6);
+  g.font='11px system-ui';g.textBaseline='middle';
+  SEN.forEach((s,i)=>{const y=4+i*rh;if(i%2){g.fillStyle='rgba(255,255,255,.03)';g.fillRect(L,y,W-L,rh);}g.fillStyle='#93a1b0';g.fillText(s[0],4,y+rh/2);
+    g.fillStyle=s[1];let ini=null;
+    for(let k=0;k<mues.length;k++){const m=mues[k],on=(m[1]>>i)&1;if(m[0]<t0){if(on)ini=t0;else ini=null;continue;}
+      if(on&&ini===null)ini=m[0];if(!on&&ini!==null){g.fillRect(X(ini),y+3,Math.max(1.5,X(m[0])-X(ini)),rh-6);ini=null;}}
+    if(ini!==null)g.fillRect(X(ini),y+3,Math.max(1.5,X(t)-X(ini)),rh-6);});
+  g.strokeStyle='#2a3542';g.fillStyle='#93a1b0';const paso=sVent<=30?5:sVent<=120?10:30;
+  for(let s=0;s<=sVent;s+=paso){const x=X(t0+s);g.beginPath();g.moveTo(x,4);g.lineTo(x,H-B);g.stroke();g.fillText((s-sVent)+' s',x-12,H-8);}
+}
+$('sMas').onclick=()=>{sVent=Math.max(15,sVent/2);$('sVent').textContent=sVent;};
+$('sMenos').onclick=()=>{sVent=Math.min(600,sVent*2);$('sVent').textContent=sVent;};
+$('sPausa').onclick=()=>{sPausa=!sPausa;$('sPausa').textContent=sPausa?'Seguir':'Pausar';};
+$('sCsv').onclick=()=>{bajar('senales_planta_nube.csv','hora;t_s;'+SEN.map(s=>s[0]).join(';')+'\n'+mues.map(m=>[hora(m[0]),m[0].toFixed(2)].concat(SEN.map((s,i)=>(m[1]>>i)&1)).join(';')).join('\n'));};
+function dibujar(t){
+  const c=$('graf'),r=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+  c.width=r.width*dpr;c.height=r.height*dpr;const g=c.getContext('2d');g.scale(dpr,dpr);
+  const W=r.width,H=r.height,L=44,B=22,T=8;
+  let mx=10;hist.forEach(p=>{if(p[1]>mx)mx=p[1];if(p[2]!==null&&p[2]>mx)mx=p[2];});mx=Math.ceil(mx*1.15/10)*10;
+  const X=s=>L+(s-(t-60))/60*(W-L-6),Y=v=>T+(1-v/mx)*(H-T-B);
+  g.font='11px system-ui';g.fillStyle='#93a1b0';g.strokeStyle='#2a3542';g.lineWidth=1;
+  for(let k=0;k<=4;k++){const v=mx*k/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(W-6,y);g.stroke();g.fillText(v.toFixed(0),6,y+4);}
+  for(let s=0;s<=60;s+=10){const x=X(t-60+s);g.fillText((s-60)+' s',x-12,H-6);}
+  g.strokeStyle='#f08a24';g.lineWidth=2;marcas.forEach(m=>{const x=X(m);g.beginPath();g.moveTo(x,T);g.lineTo(x,H-B);g.stroke();});
+  if(hist.length>1){g.strokeStyle='#5aa9ff';g.lineWidth=2;g.beginPath();hist.forEach((p,i)=>{const x=X(p[0]),y=Y(p[1]);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
+    g.lineTo(X(hist[hist.length-1][0]),Y(0));g.lineTo(X(hist[0][0]),Y(0));g.closePath();g.fillStyle='rgba(90,169,255,.12)';g.fill();
+    g.strokeStyle='#5fd38d';g.lineWidth=2;g.setLineDash([6,4]);g.beginPath();let on=false;
+    hist.forEach(p=>{if(p[2]===null){on=false;return;}const x=X(p[0]),y=Y(p[2]);on?g.lineTo(x,y):g.moveTo(x,y);on=true;});g.stroke();g.setLineDash([]);}
+}
+// ---------------------------------------------------------------- registro (eventos de la nube)
+const filas=[],regDat=[],alarmas=[];
+function clasif(d){
+  const ca=d.clase==='A'?'cA':(d.clase==='B'?'cB':'cN'),caja=d.clase==='A'||d.clase==='B'?d.clase:'no es limón';
+  regDat.push([horaYa(),d.naranja,caja,d.conf,d.ms,d.respuesta_ms,d.metodo]);
+  filas.unshift('<tr><td>'+horaYa()+'</td><td>'+(+d.naranja?'#'+esc(d.naranja):'prueba')+'</td><td class="'+ca+'"><b>'+esc(caja)+'</b></td><td>'+esc(d.conf)+' %</td><td>'+esc(d.ms)+' ms</td><td>'+esc(d.respuesta_ms)+' ms</td><td>'+esc(d.metodo)+'</td></tr>');
+  filas.length=Math.min(filas.length,30);$('reg').innerHTML=filas.join('');
+}
+$('rCsv').onclick=()=>bajar('registro_limones_nube.csv','hora;limon;caja;confianza_pct;clasificacion_ms;respuesta_pic_ms;metodo\n'+regDat.map(r=>r.join(';')).join('\n'));
+function alarma(d){alarmas.unshift(horaYa()+' · '+(d.codigo?'Alarma '+d.codigo+': '+(ALT[d.codigo]||d.texto):'alarma borrada'));alarmas.length=Math.min(alarmas.length,10);
+  $('alarmas').innerHTML=alarmas.map(a=>'<div>'+esc(a)+'</div>').join('');}
+function foto(dato){
+  if(fotoUrl)URL.revokeObjectURL(fotoUrl);
+  fotoUrl=URL.createObjectURL(new Blob([dato],{type:'image/jpeg'}));
+  $('ultima').src=fotoUrl;$('ultBajar').href=fotoUrl;$('ultBajar').hidden=false;
+}
+// ---------------------------------------------------------------- conexión con el broker
 $('host').value=HOST_DEF;$('base').value=BASE_DEF;
 try{$('host').value=localStorage.getItem('nar_host')||HOST_DEF;$('base').value=localStorage.getItem('nar_base')||BASE_DEF;$('user').value=localStorage.getItem('nar_user')||'';}catch(e){}
-function habilitar(si){document.querySelectorAll('[data-c]').forEach(b=>b.disabled=!si);$('velR').disabled=!si;}
-function pub(txt){
-  if(!(cli&&cli.connected))return;
-  const pin=$('pin').value.trim();
-  if(!pin){$('ack').textContent='Escriba el PIN de mando (arriba) para telecomandar.';$('pin').focus();return;}
-  cli.publish(BASE+'/cmd',pin+'|'+txt);$('ack').textContent=hora()+' · enviado "'+txt+'", esperando a la planta…';
-}
-document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>pub(b.dataset.c));
-$('velR').oninput=e=>{arrastrando=true;$('velTxt').textContent=e.target.value+' %';};
-$('velR').onchange=e=>{arrastrando=false;pub('vel:'+e.target.value);};
+function planta(si){$('pPlanta').classList.toggle('ok',si);$('tPlanta').textContent=si?'Planta en línea':'Planta desconectada';}
 function conectar(){
-  const host=($('host').value.trim()||HOST_DEF).replace(/^.*:\/\//,'').replace(/[:\/].*$/,''), user=$('user').value.trim(), pass=$('pass').value;
+  const host=($('host').value.trim()||HOST_DEF).replace(/^.*:\/\//,'').replace(/[:\/].*$/,''),user=$('user').value.trim(),pass=$('pass').value;
   BASE=($('base').value.trim()||BASE_DEF).replace(/\/+$/,'');
-  if(typeof mqtt==='undefined'){$('msg').textContent='No se pudo cargar la biblioteca MQTT: revisen la conexión a internet y recarguen.';return;}
+  if(typeof mqtt==='undefined'){$('cMsg').textContent='No se pudo cargar la biblioteca MQTT: revisen la conexión a internet y recarguen.';return;}
   try{localStorage.setItem('nar_host',host);localStorage.setItem('nar_base',BASE);localStorage.setItem('nar_user',user);}catch(e){}
   if(cli)cli.end(true);
-  $('msg').textContent='Conectando a '+host+'…';
+  $('cMsg').textContent='Conectando a '+host+'…';
   const op={clientId:'tablero-'+Math.random().toString(16).slice(2,10),reconnectPeriod:5000,connectTimeout:30000,clean:true};
   if(user){op.username=user;op.password=pass;}
   cli=mqtt.connect('wss://'+host+':8884/mqtt',op);
-  cli.on('connect',()=>{$('pBroker').classList.add('ok');$('tBroker').textContent='Conectado a la nube';$('msg').textContent='Conectado a '+host+'. Escuchando '+BASE+'/…';cli.subscribe(BASE+'/#');habilitar(true);});
-  cli.on('close',()=>{$('pBroker').classList.remove('ok');$('tBroker').textContent='Sin conexión con la nube';habilitar(false);});
-  cli.on('error',e=>{$('msg').textContent='Error: '+(e&&e.message?e.message:e);});
-  cli.on('message',(tema,dato)=>{const t=tema.slice(BASE.length+1),txt=dato.toString();
-    if(t==='conexion'){planta(txt==='online');return;}
-    if(t==='ack'){$('ack').textContent=hora()+' · planta: '+txt;$('ack').style.color=txt.startsWith('ok')?'var(--ok)':'var(--bad)';return;}
-    if(t==='cmd')return;
-    let d;try{d=JSON.parse(txt);}catch(e){return;}
-    if(t==='estado')estado(d);else if(t==='clasificacion')clasif(d);else if(t==='alarma')alarma(d);});
+  cli.on('connect',()=>{$('pBroker').classList.add('ok');$('tBroker').textContent='Conectado a la nube';$('cMsg').textContent='Conectado a '+host+'. Escuchando '+BASE+'/…';cli.subscribe(BASE+'/#');});
+  cli.on('close',()=>{$('pBroker').classList.remove('ok');$('tBroker').textContent='Sin conexión con la nube';bloquear();});
+  cli.on('error',e=>{$('cMsg').textContent='Error: '+(e&&e.message?e.message:e);});
+  cli.on('message',recibir);
+}
+function recibir(tema,dato){
+  const t=tema.slice(BASE.length+1);
+  if(t==='ultima'){foto(dato);return;}
+  const txt=dato.toString();
+  if(t==='conexion'){enLinea=txt==='online';planta(enLinea);return;}
+  if(t==='ack'){avisar(horaYa()+' · planta: '+txt,txt.startsWith('ok')?'var(--ok)':'var(--bad)');return;}
+  if(t==='cmd')return;
+  let d;try{d=JSON.parse(txt);}catch(e){return;}
+  if(t==='completo'){tCompleto=Date.now();tDatos=Date.now();planta(enLinea!==false);pintar(d);}
+  else if(t==='estado'){if(Date.now()-tCompleto>5000){tDatos=Date.now();planta(enLinea!==false);pintar(deResumen(d));}}
+  else if(t==='clasificacion')clasif(d);
+  else if(t==='alarma')alarma(d);
 }
 $('conectar').onclick=conectar;
-function planta(si){$('pPlanta').classList.toggle('ok',si);$('tPlanta').textContent=si?'Planta en línea':'Planta desconectada';}
-function hora(){return new Date().toLocaleTimeString('es-PE',{hour12:false});}
-function estado(d){
-  tEstado=Date.now();planta(true);
-  const e=$('estado');e.textContent=d.enlace?(NOM[d.est]||d.estado):'SIN ENLACE CON EL PIC';e.className='big s'+(d.enlace?d.est:0);
-  $('estadoSub').textContent=(d.naranja?'Limón en el nido':'Nido libre')+' · encendida hace '+d.up+' s'+(d.alarma?' · alarma '+d.alarma:'');
-  $('nA').textContent=d.nA;$('nB').textContent=d.nB;$('conteoSub').textContent=d.naranjas+' detectadas · '+d.por_min+' por minuto';
-  $('vel').textContent=Number(d.vel).toFixed(0);
-  $('fajaSub').textContent='PWM '+d.pwm+' % (consigna '+d.consigna+' %) · corriente '+(d.corriente===null?'—':Number(d.corriente).toFixed(2)+' A')+' · frenado '+Number(d.t_fren_ms).toFixed(1)+' ms';
-  if(!arrastrando){$('velR').value=d.consigna;$('velTxt').textContent=d.consigna+' %';}
-  $('sentTxt').textContent=d.retro?'atrás (solo mover)':'adelante';$('sentTxt').style.color=d.retro?'var(--warn)':'';
-  $('sAde').classList.toggle('go',!d.retro);$('sAtr').classList.toggle('go',!!d.retro);
-  if(cli&&cli.connected){const p=d.enlace&&(d.est===0||d.est===4);$('sAde').disabled=$('sAtr').disabled=!p;}
-  hist.push([Date.now()/1000,Number(d.vel)||0,d.corriente===null?null:Number(d.corriente)]);
-  const lim=Date.now()/1000-120;while(hist.length&&hist[0][0]<lim)hist.shift();dibujar();
-}
-function clasif(d){
-  const c=$('clase');c.textContent='Caja '+d.clase;c.className='big '+(d.clase==='A'?'cA':'cB');
-  $('claseSub').textContent='Limón '+d.naranja+' · confianza '+d.conf+' % · '+d.ms+' ms';
-  filas.unshift('<tr><td>'+hora()+'</td><td>#'+d.naranja+'</td><td class="'+(d.clase==='A'?'cA':'cB')+'"><b>'+d.clase+'</b></td><td>'+d.conf+' %</td><td>'+d.ms+' ms</td><td>'+d.respuesta_ms+' ms</td><td>'+d.metodo+'</td></tr>');
-  filas.length=Math.min(filas.length,20);$('reg').innerHTML=filas.join('');
-}
-function alarma(d){alarmas.unshift(hora()+' · '+(d.codigo?'Alarma '+d.codigo+': ':'')+d.texto);alarmas.length=Math.min(alarmas.length,8);$('alarmas').innerHTML=alarmas.map(a=>'<div>'+a+'</div>').join('');}
-function dibujar(){
-  const c=$('graf'),r=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;c.width=r.width*dpr;c.height=r.height*dpr;
-  const g=c.getContext('2d');g.scale(dpr,dpr);const W=r.width,H=r.height,L=40,R=40,B=20,T=8,t=Date.now()/1000;
-  let mv=10,mi=0.5;hist.forEach(p=>{if(p[1]>mv)mv=p[1];if(p[2]!==null&&p[2]>mi)mi=p[2];});mv=Math.ceil(mv*1.15/10)*10;mi=Math.ceil(mi*1.2*10)/10;
-  const X=s=>L+(s-(t-120))/120*(W-L-R),Y=(v,m)=>T+(1-v/m)*(H-T-B);
-  g.font='11px system-ui';g.strokeStyle='#2a3542';g.lineWidth=1;
-  for(let k=0;k<=4;k++){const y=T+k/4*(H-T-B);g.beginPath();g.moveTo(L,y);g.lineTo(W-R,y);g.stroke();g.fillStyle='#5aa9ff';g.fillText((mv*(1-k/4)).toFixed(0),4,y+4);g.fillStyle='#f08a24';g.fillText((mi*(1-k/4)).toFixed(1)+' A',W-R+4,y+4);}
-  if(hist.length>1){g.lineWidth=2;g.strokeStyle='#5aa9ff';g.beginPath();hist.forEach((p,i)=>{const x=X(p[0]),y=Y(p[1],mv);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
-    g.strokeStyle='#f08a24';g.beginPath();let on=false;hist.forEach(p=>{if(p[2]===null){on=false;return;}const x=X(p[0]),y=Y(p[2],mi);on?g.lineTo(x,y):g.moveTo(x,y);on=true;});g.stroke();}
-}
-setInterval(()=>{if(tEstado&&Date.now()-tEstado>5000){planta(false);}},2000);
+setInterval(()=>{if(tDatos&&Date.now()-tDatos>5000)planta(false);},2000);
+pintarTiem();bloquear();
 window.addEventListener('load',conectar);
 </script>
 </body></html>
