@@ -9,8 +9,11 @@
        .../completo  el mismo JSON que /estado de la página local (ESP32 desde el 26/11/2026)
        .../estado    JSON resumido (firmware anterior: el tablero muestra lo que puede con él)
        .../ultima    JPEG de la última foto que vio la red
+       .../vivo      JPEG de la cámara completa, cuando se pulsa "Actualizar imagen" (comando "foto")
+       .../roi       JPEG del recorte del nido, al guardar una foto para entrenar (comando "roi")
        .../clasificacion, .../alarma, .../conexion, .../ack
-     Los mandos viajan como "PIN|accion:valor" al tema .../cmd. -->
+     Los mandos viajan como "PIN|accion:valor" al tema .../cmd. Los ajustes como "PIN|cfg:rcx=50&rcy=50"
+     (los mismos nombres que /cfg de la página local) y la calibración como "PIN|calib:37.5,38". -->
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
 :root{--bg:#101418;--panel:#182028;--line:#2a3542;--ink:#e8edf2;--mute:#93a1b0;--accent:#f08a24;--ok:#3cc47c;--warn:#f2c94c;--bad:#ff5d5d;--blue:#5aa9ff}
@@ -77,6 +80,9 @@ label.f input{font:15px system-ui,sans-serif;color:var(--ink);background:#0f151b
 .luz.on{border-color:var(--accent);color:var(--ink);background:#33230f}
 .chk{display:flex;align-items:center;gap:9px;font-size:14px;margin-top:9px}
 .camg{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px;align-items:start}
+.vista{position:relative;width:100%;max-width:340px;aspect-ratio:4/3;background:#0b0f13;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.vista img{width:100%;height:100%;object-fit:fill;display:block}
+.vista .roi{position:absolute;border:2px solid var(--accent);border-radius:50%;pointer-events:none}
 nav{display:flex;gap:6px;flex-wrap:wrap;position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0}
 nav a{color:var(--mute);text-decoration:none;font-size:13px;font-weight:600;border:1px solid var(--line);border-radius:999px;padding:5px 12px}
 nav a:hover{color:var(--ink);border-color:var(--blue)}
@@ -257,34 +263,50 @@ summary{cursor:pointer}
 
 <h2 class="sec" id="camara">Cámara</h2>
 <div class="grid">
-  <section class="card">
-    <h2>Última foto que vio la red</h2>
-    <img id="ultima" alt="Todavía no llega ninguna foto" style="width:192px;height:192px;image-rendering:pixelated;border-radius:8px;background:#0002;display:block">
-    <div class="row"><span id="ultCap">—</span><a id="ultBajar" download="ultima.jpg" href="#" hidden style="color:var(--blue)">Descargar</a></div>
-    <div class="msg">Llega por internet en cada clasificación (96 × 96 px, lo mismo que recibe el modelo). Si con la faja en marcha sale movida, corrida del centro u oscura, ahí está el error.</div>
-    <div class="btns" style="margin-top:8px"><button data-a="clasificar">Clasificar ahora</button></div>
-  </section>
-  <section class="card">
-    <h2>Ajustes de la cámara</h2>
-    <div class="diag">
-      <span>Centro del nido (X / Y)</span><span id="cCen">—</span>
-      <span>Tamaño del recorte</span><span id="cTam">—</span>
-      <span>Color sano mínimo para A (clasificador por color)</span><span id="cUmb">—</span>
+  <section class="card" style="grid-column:1/-1">
+    <h2>Cámara del nido</h2>
+    <div class="camg">
+      <div>
+        <div class="vista"><img id="foto" alt="Pulsen Actualizar imagen"><div class="roi" id="roiBox"></div></div>
+        <div class="btns" style="margin-top:8px"><button id="verFoto">Actualizar imagen</button><button data-a="clasificar">Clasificar ahora</button></div>
+        <div class="msg" id="camMsg" style="margin-top:8px">La imagen viaja por internet solo cuando la piden (unos 10 kB), para no cargar el hotspot.</div>
+      </div>
+      <div>
+        <div class="cfg">
+          <label class="f">Centro X del nido (%)<input id="rcx" type="number" min="0" max="100"></label>
+          <label class="f">Centro Y del nido (%)<input id="rcy" type="number" min="0" max="100"></label>
+          <label class="f">Tamaño del recorte (%)<input id="rl" type="number" min="10" max="100"></label>
+          <label class="f">Color sano mínimo para A (%, solo clasificador por color)<input id="umb" type="number" min="1" max="99"></label>
+        </div>
+        <div class="row"><button id="guardarCam">Guardar ajustes de cámara</button></div>
+        <div class="msg">El círculo marca la zona que ve la red neuronal: debe cubrir el limón en el nido. No lo cambien sin volver a entrenar: el modelo se entrenó con centro 50/50 y tamaño 80 %.</div>
+        <h2 style="margin-top:14px">Tamaño y forma (sin IA)</h2>
+        <div class="cfg">
+          <label class="f">Control activo (1 sí · 0 no)<input id="gon" type="number" min="0" max="1"></label>
+          <label class="f">Ancho mínimo (mm)<input id="gan" type="number" min="1" max="250"></label>
+          <label class="f">Largo máximo (mm)<input id="gla" type="number" min="1" max="250"></label>
+          <label class="f">Largo ÷ ancho máximo<input id="grel" type="number" step="0.05" min="1" max="5"></label>
+          <label class="f">Color ajeno máximo (%: rojo, azul, verde puro)<input id="gaj" type="number" min="1" max="100"></label>
+        </div>
+        <div class="row"><button id="guardarGeo">Guardar tamaño y forma</button></div>
+        <div class="diag" style="margin-top:6px"><span>Calibración actual</span><span id="gMm">—</span></div>
+        <div class="cfg">
+          <label class="f">Largo del limón con regla (mm)<input id="calL" type="number" step="0.5"></label>
+          <label class="f">Ancho del limón con regla (mm)<input id="calA" type="number" step="0.5"></label>
+        </div>
+        <div class="row"><button id="calibrar">Calibrar con el limón del nido</button></div>
+        <div class="msg" id="geoMsg">Color ajeno: si el centro del nido tiene más de ese % de un color vivo que un limón no tiene, va como <b>no es limón</b>, diga lo que diga la red (limones reales: 0 %). Tamaño y forma: solo cuando la red dice <b>buena</b> (si dice mala, va a B igual); fuera de los límites va como <b>no es limón</b> (alarma 5, la garra no se mueve). Calibren de nuevo si mueven la cámara o cambian el recorte.</div>
+      </div>
+      <div>
+        <div class="btns"><button id="fotoA">Guardar foto · buena</button><button id="fotoB">Guardar foto · mala</button><button id="fotoC">Guardar foto · otro</button></div>
+        <div class="row"><span>Fotos guardadas en esta sesión</span><b id="nFotos">0 buenas · 0 malas · 0 otros</b></div>
+        <div class="msg">Cada foto se descarga a este equipo como <i>buena_001.jpg</i> o <i>mala_001.jpg</i> (recorte de 192 × 192 px). Sirven para entrenar el modelo: muevan y giren el limón entre foto y foto.</div>
+        <h2 style="margin-top:14px">Última foto que vio la red</h2>
+        <img id="ultima" alt="Todavía no llega ninguna foto" style="width:192px;height:192px;image-rendering:pixelated;border-radius:8px;background:#0002;display:block">
+        <div class="row"><span id="ultCap">—</span><a id="ultBajar" download="ultima.jpg" href="#" hidden style="color:var(--blue)">Descargar</a></div>
+        <div class="msg">Llega por internet en cada clasificación (96 × 96 px, lo mismo que recibe el modelo). Si con la faja en marcha sale movida, corrida del centro u oscura, ahí está el error.</div>
+      </div>
     </div>
-    <h2 style="margin-top:14px">Tamaño y forma (sin IA)</h2>
-    <div class="diag">
-      <span>Control activo</span><span id="gOn">—</span>
-      <span>Ancho mínimo</span><span id="gAn">—</span>
-      <span>Largo máximo</span><span id="gLa">—</span>
-      <span>Largo ÷ ancho máximo</span><span id="gRel">—</span>
-      <span>Color ajeno máximo</span><span id="gAj">—</span>
-      <span>Calibración</span><span id="gMm">—</span>
-    </div>
-    <div class="msg" style="margin-top:8px">Color ajeno: si el centro del nido tiene más de ese % de un color vivo que un limón no tiene, va como <b>no es limón</b>. Tamaño y forma: solo cuando la red dice <b>buena</b>; fuera de los límites va como <b>no es limón</b> (alarma 5, la garra no se mueve).</div>
-  </section>
-  <section class="card">
-    <h2>Vista en vivo y fotos para entrenar</h2>
-    <div class="msg" style="color:var(--ink);font-size:13.5px;line-height:1.6">La vista en vivo de la cámara, la captura de fotos <i>buena / mala / otro</i>, la calibración con regla y los cambios de estos ajustes se hacen en la página local de la ESP32 (red <b>Clasificadora-Naranjas</b>, <b>http://192.168.4.1</b>). Por internet solo viaja la última foto, para no cargar la conexión del hotspot.</div>
   </section>
 </div>
 
@@ -292,9 +314,13 @@ summary{cursor:pointer}
 <div class="grid">
   <section class="card">
     <h2>Corriente de los motores · ACS712</h2>
-    <div class="diag"><span>Sensibilidad</span><span id="dSens">—</span><span>Límite de alarma</span><span id="dLim">—</span><span>Lectura del ADC</span><span id="dAdc">—</span><span>Cero (motores parados)</span><span id="dCero">—</span></div>
-    <div class="row"><button data-a="cero">Medir el cero</button><span></span></div>
-    <div class="msg" style="margin-top:8px">Midan el cero con la faja parada. La sensibilidad y el límite se cambian en la página local.</div>
+    <div class="cfg">
+      <label class="f">Sensibilidad (mV/A)<input id="sens" type="number" step="1" min="20"></label>
+      <label class="f">Límite de alarma (A, 0 = sin alarma)<input id="lim" type="number" step="0.1" min="0"></label>
+    </div>
+    <div class="row"><button id="guardarCorr">Guardar</button><button data-a="cero">Medir el cero</button></div>
+    <div class="diag" style="margin-top:10px"><span>Lectura del ADC</span><span id="dAdc">—</span><span>Cero (motores parados)</span><span id="dCero">—</span></div>
+    <div class="msg" style="margin-top:8px">185 mV/A para el ACS712 de 5 A, 100 para el de 20 A, 66 para el de 30 A. Midan el cero con la faja parada.</div>
   </section>
   <section class="card">
     <h2>Últimos frenados <span style="text-transform:none;letter-spacing:0;font-weight:400">(desde la interrupción hasta que la faja para)</span></h2>
@@ -327,13 +353,14 @@ summary{cursor:pointer}
   </section>
   <section class="card">
     <h2>Ajustes del encoder</h2>
-    <div class="diag">
-      <span>Reducción del motor</span><span id="cRed">—</span>
-      <span>mm por vuelta del eje</span><span id="cMm">—</span>
-      <span>Sentido motor 1 / motor 2</span><span id="cInv">—</span>
+    <div class="cfg">
+      <label class="f">Reducción del motor (1:N)<input id="cRed" type="number" step="0.1" min="1"></label>
+      <label class="f">mm por vuelta del eje<input id="cMm" type="number" step="0.1" min="1"></label>
+      <label class="f" style="flex-direction:row;align-items:center;gap:8px"><input id="cInv" type="checkbox">Invertir sentido motor 1</label>
+      <label class="f" style="flex-direction:row;align-items:center;gap:8px"><input id="cInv2" type="checkbox">Invertir sentido motor 2</label>
     </div>
-    <div class="row"><button id="borrar">Borrar contadores</button><span></span></div>
-    <div class="msg" id="msg">Los ajustes se cambian en la página local. Borrar contadores pone en cero los limones, los conteos A/B y los frenados.</div>
+    <div class="row"><button id="guardar">Guardar ajustes</button><button id="borrar">Borrar contadores</button></div>
+    <div class="msg" id="msg">La banda de 12 dientes × 15 mm avanza unos 180 mm por vuelta. Midan 50 cm de avance para afinar. Borrar contadores pone en cero los limones, los conteos A/B y los frenados.</div>
   </section>
 </div>
 
@@ -397,7 +424,38 @@ $('auto').onchange=e=>cmd('auto',e.target.checked?1:0);
 $('esp').oninput=e=>{arrEsp=true;$('espTxt').textContent=(+e.target.value).toFixed(1).replace('.',',')+' s';};
 $('esp').onchange=e=>{arrEsp=false;cmd('espera',Math.round(e.target.value*10));};
 $('borrar').onclick=()=>{if(cmd('contadores')){hist.length=0;marcas.length=0;$('msg').textContent='Contadores en cero.';}};
-function bloquear(){if(conectado())return;document.querySelectorAll('[data-a],#bHome,#vel,#esp,#auto,.modo').forEach(b=>b.disabled=true);}
+// ---------------------------------------------------------------- cámara y ajustes por la nube (26/11/2026)
+// Lo mismo que la página local hace con /cfg, /calib, /foto.jpg y /roi.jpg, pero por MQTT.
+let camCargada=false,vivoUrl=null,fotoPend=null,fotoT=null,nFa=0,nFb=0,nFc=0;
+const AJUSTES=['verFoto','rcx','rcy','rl','umb','guardarCam','gon','gan','gla','grel','gaj','guardarGeo','calL','calA','calibrar','fotoA','fotoB','fotoC','sens','lim','guardarCorr','cRed','cMm','cInv','cInv2','guardar'];
+// manda "cfg:k=v&k=v" con los campos cuyo id es igual al nombre del ajuste en la ESP32
+const ajustar=(ids,msg,txt)=>{if(cmd('cfg',ids.map(i=>i+'='+$(i).value).join('&')))$(msg).textContent=txt;};
+function verFoto(){if(cmd('foto'))$('camMsg').textContent='Pidiendo la imagen a la ESP32…';}
+$('verFoto').onclick=verFoto;
+function roiDib(){const cx=+$('rcx').value,cy=+$('rcy').value,l=+$('rl').value*0.84,b=$('roiBox');b.style.height=l+'%';b.style.width=(l*0.75)+'%';b.style.left=(cx-l*0.375)+'%';b.style.top=(cy-l/2)+'%';}
+['rcx','rcy','rl'].forEach(i=>$(i).oninput=roiDib);
+$('guardarCam').onclick=()=>ajustar(['rcx','rcy','rl','umb'],'camMsg','Guardando los ajustes de cámara…');
+$('guardarGeo').onclick=()=>{$('gon').value=+$('gon').value?1:0;ajustar(['gon','gan','gla','grel','gaj'],'geoMsg','Guardando tamaño y forma…');};
+$('guardarCorr').onclick=()=>ajustar(['sens','lim'],'msg','Guardando la sensibilidad y el límite del ACS712…');
+$('guardar').onclick=()=>{if(cmd('cfg','reduccion='+$('cRed').value+'&mm='+$('cMm').value+'&inv='+($('cInv').checked?1:0)+'&inv2='+($('cInv2').checked?1:0)))$('msg').textContent='Guardando los ajustes del encoder…';};
+$('calibrar').onclick=()=>{const l=$('calL').value,a=$('calA').value;if(!(l>0&&a>0)){$('geoMsg').textContent='Escriban primero el largo y el ancho del limón en mm.';return;}
+  if(cmd('calib',l+','+a))$('geoMsg').textContent='Midiendo el limón del nido… (la respuesta llega en unos segundos)';};
+function guardarFoto(clase){if(fotoPend){$('camMsg').textContent='Esperen: todavía llega la foto anterior.';return;}
+  if(!cmd('roi'))return;fotoPend=clase;$('camMsg').textContent='Tomando la foto ('+clase+')…';
+  fotoT=setTimeout(()=>{fotoPend=null;$('camMsg').textContent='No llegó la foto. Revisen que la planta esté en línea y vuelvan a intentar.';},15000);}
+$('fotoA').onclick=()=>guardarFoto('buena');$('fotoB').onclick=()=>guardarFoto('mala');$('fotoC').onclick=()=>guardarFoto('otro');
+function fotoVivo(dato){if(vivoUrl)URL.revokeObjectURL(vivoUrl);vivoUrl=URL.createObjectURL(new Blob([dato],{type:'image/jpeg'}));$('foto').src=vivoUrl;$('camMsg').textContent='Imagen de las '+horaYa()+'.';}
+function fotoRoi(dato){if(!fotoPend)return;clearTimeout(fotoT);const clase=fotoPend;fotoPend=null;
+  const n=clase==='buena'?++nFa:(clase==='mala'?++nFb:++nFc),u=URL.createObjectURL(new Blob([dato],{type:'image/jpeg'})),a=document.createElement('a');
+  a.href=u;a.download=clase+'_'+String(n).padStart(3,'0')+'.jpg';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000);
+  $('nFotos').textContent=nFa+' buenas · '+nFb+' malas · '+nFc+' otros';$('camMsg').textContent='Foto guardada: '+a.download;}
+// respuesta de la ESP32 a "cfg" y "calib": se muestra también junto al botón
+function respuesta(txt){
+  if(/calibra/i.test(txt))$('geoMsg').textContent=txt;
+  else if(/ajustes/.test(txt)){camCargada=false;['camMsg','msg'].forEach(i=>{if(/Guardando/.test($(i).textContent))$(i).textContent=txt;});if(/Guardando/.test($('geoMsg').textContent))$('geoMsg').textContent=txt;}
+  else if(/camara/.test(txt)){$('camMsg').textContent='La cámara no respondió. Prueben de nuevo; si sigue, revisen la ESP32.';if(fotoPend){clearTimeout(fotoT);fotoPend=null;}}
+}
+function bloquear(){if(conectado())return;document.querySelectorAll('[data-a],#bHome,#vel,#esp,#auto,.modo').forEach(b=>b.disabled=true);AJUSTES.forEach(i=>$(i).disabled=true);}
 
 // ---------------------------------------------------------------- estado resumido (ESP32 con el firmware anterior)
 function deResumen(r){
@@ -471,13 +529,17 @@ function pintar(d){
     document.querySelectorAll('.modo').forEach(x=>{x.checked=!!(cfg.modo&+x.dataset.b);x.disabled=!con;});
     tx('dAdc',d.adc===65535?'sin sensor':d.adc);tx('dCero',d.cero);
   }
-  // ajustes (solo lectura: se cambian en la página local)
-  tx('cCen',cfg.rcx!==undefined?cfg.rcx+' % / '+cfg.rcy+' %':null);tx('cTam',cfg.rl!==undefined?cfg.rl+' %':null);tx('cUmb',cfg.umb!==undefined?cfg.umb+' %':null);
+  // ajustes: se cargan en los campos una sola vez (como en la página local) para no pisar lo que se está escribiendo
   const g=d.geo;
-  tx('gOn',g?(g.on?'sí':'no'):null);tx('gAn',g?g.amin+' mm':null);tx('gLa',g?g.lmax+' mm':null);tx('gRel',g?Number(g.rel).toFixed(2):null);tx('gAj',g?g.ajmax+' %':null);tx('gMm',g?Number(g.mmpx).toFixed(3)+' mm por píxel':null);
-  tx('dSens',cfg.sens!==undefined?cfg.sens+' mV/A':null);tx('dLim',cfg.lim!==undefined?(+cfg.lim?Number(cfg.lim).toFixed(1)+' A':'sin alarma'):null);
-  tx('cRed',cfg.reduccion!==undefined?'1:'+cfg.reduccion:null);tx('cMm',cfg.mm!==undefined?cfg.mm+' mm':null);
-  tx('cInv',cfg.inv!==undefined?(cfg.inv?'invertido':'normal')+' / '+(cfg.inv2?'invertido':'normal'):null);
+  tx('gMm',g?Number(g.mmpx).toFixed(3)+' mm por píxel':null);
+  if(!camCargada&&cfg.rcx!==undefined){
+    $('rcx').value=cfg.rcx;$('rcy').value=cfg.rcy;$('rl').value=cfg.rl;$('umb').value=cfg.umb;$('sens').value=cfg.sens;$('lim').value=cfg.lim;
+    if(g){$('gon').value=g.on;$('gan').value=g.amin;$('gla').value=g.lmax;$('grel').value=g.rel;$('gaj').value=g.ajmax;}
+    $('cRed').value=cfg.reduccion;$('cMm').value=cfg.mm;$('cInv').checked=!!cfg.inv;$('cInv2').checked=!!cfg.inv2;
+    camCargada=true;roiDib();
+  }
+  const ajOk=con&&!d.resumen&&cfg.rcx!==undefined;
+  AJUSTES.forEach(i=>$(i).disabled=!ajOk);
   const m2=d.m2;
   $('m2s').hidden=!m2;$('m1h').hidden=!m2;$('ley2').hidden=!m2;
   if(m2){
@@ -650,9 +712,11 @@ function conectar(){
 function recibir(tema,dato){
   const t=tema.slice(BASE.length+1);
   if(t==='ultima'){foto(dato);return;}
+  if(t==='vivo'){fotoVivo(dato);return;}
+  if(t==='roi'){fotoRoi(dato);return;}
   const txt=dato.toString();
   if(t==='conexion'){enLinea=txt==='online';planta(enLinea);return;}
-  if(t==='ack'){avisar(horaYa()+' · planta: '+txt,txt.startsWith('ok')?'var(--ok)':'var(--bad)');return;}
+  if(t==='ack'){avisar(horaYa()+' · planta: '+txt,txt.startsWith('ok')?'var(--ok)':'var(--bad)');respuesta(txt);return;}
   if(t==='cmd')return;
   let d;try{d=JSON.parse(txt);}catch(e){return;}
   if(t==='completo'){tCompleto=Date.now();tDatos=Date.now();planta(enLinea!==false);pintar(d);}
